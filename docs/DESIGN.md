@@ -13,7 +13,8 @@
 | 2 | Domain models, `AiOptions`, `ExtractionException`, `ExtractionPrompt`, `ExtractionResponseParser`, unit tests | Implemented and unit-tested |
 | 3 | `ILlmClient`, `GeminiLlmClient`, `NoteExtractionService`, `NotesController`, `Program.cs` (DI, CORS, ProblemDetails, safe logging), service/client/endpoint tests | **Done.** Implemented and tested with fakes. Real-API diagnosis found `maxItems` in the `responseSchema` caused Gemini's 400; removed. Real end-to-end smoke test through `POST /api/notes/extract` with `gemini-3.1-flash-lite` returned a successful structured extraction — see Open items |
 | 4 | Frontend (`apps/web`): pinned dependencies, TypeScript config, API client, Advisor Note Extractor UI | Implemented; typecheck/build pass; verified in a real browser against the local API — see [Frontend](#frontend-as-implemented-phase-4) |
-| 5+ | CI/Docker, deployment | Not started |
+| 5 | CI (GitHub Actions) and Docker (`.dockerignore`, non-root runtime, Compose `env_file`) | Implemented; workflow schema-validated and local checks pass; Docker image and Compose verified locally — see CI/Docker under Deployment approach. First GitHub Actions run happens on push |
+| 6+ | Railway deployment | Not started |
 
 ## Problem
 
@@ -419,16 +420,16 @@ Note: without `launchSettings.json`, `dotnet run` starts the API in the **Produc
 
 **Frontend local development.** Unlike ASP.NET Core, Vite does read `.env` files itself. Copy `apps/web/.env.example` to `apps/web/.env.local` (git-ignored via `.env.*`), set `VITE_API_BASE_URL=http://localhost:5000` (the API's default `dotnet run` address), then `npm ci` and `npm run dev` in `apps/web` (served on `http://localhost:5173`).
 
-**CI (GitHub Actions)** — extend the existing workflow:
-- Commit `apps/web/package-lock.json`; use `npm ci`.
-- npm and NuGet caching.
-- Frontend build runs a TypeScript typecheck (`tsc --noEmit && vite build`).
-- `permissions: contents: read`.
-- No deployment from CI (Railway deploys from GitHub).
+**CI (GitHub Actions)** — `.github/workflows/ci.yml`, as implemented in Phase 5. Triggers: every pull request, and pushes to `main`. Workflow-level `permissions: contents: read`.
+- `backend` job: `actions/setup-dotnet` 9.0.x; NuGet cache via `actions/cache` (`~/.nuget/packages`, key = hash of `**/*.csproj`). `setup-dotnet`'s built-in cache was not used because it needs `packages.lock.json` files, which the projects do not have. Then `dotnet test` (Release) for the test project. No secrets are needed: tests use fakes and dummy `UseSetting` values.
+- `frontend` job (`apps/web`): `actions/setup-node` Node 22 with `cache: npm` keyed on `apps/web/package-lock.json`, then `npm ci` and `npm run build` (which runs `tsc --noEmit` first). `VITE_API_BASE_URL` is not needed to build.
+- No Docker-build job and no deployment from CI (Railway deploys from GitHub).
 
-**Docker**
-- Keep the existing API Dockerfile (port 8080); add `apps/api/.dockerignore`; run as the image's non-root user (`USER $APP_UID`).
-- `docker-compose.yml`: pass `AI_TIMEOUT_SECONDS` and `CORS_ALLOWED_ORIGINS` as well. Since the configuration audit, the current `AI_MODEL=${AI_MODEL:-}` and the missing `AI_TIMEOUT_SECONDS` make the container fail at startup with a clear message unless they are set (no silent default). The frontend is not added to Compose (local dev uses `npm run dev`).
+**Docker** — as implemented in Phase 5:
+- `apps/api/.dockerignore` excludes `**/.env`, `**/.env.*` (except `**/.env.example`), `**/bin/`, `**/obj/`, and editor/OS files. This keeps the local `apps/api/.env` (with the real key) and Windows build output out of the build context. Railway builds from git, where `.env` does not exist.
+- `apps/api/Dockerfile`: unchanged except `USER $APP_UID` in the runtime stage, so the container runs as the image's built-in non-root `app` user (UID 1654). It still listens on 8080, needs no `HEALTHCHECK` (no `curl` in the image; Railway checks `/health`), and bakes no configuration in.
+- `docker-compose.yml`: the `api` service uses `env_file: ./apps/api/.env`, which Compose passes as environment variables when the container starts; nothing is copied into the image. The old `environment:` entries were removed deliberately, because Compose gives them precedence over `env_file` and `${AI_MODEL:-}` would have overridden the file with an empty value. Port 8080; no frontend service (local frontend dev uses `npm run dev`; point `VITE_API_BASE_URL` at `http://localhost:8080` when using the container).
+- Verified locally (Docker Desktop 29.8.0, no Gemini calls): the image builds; the build stage has no `/src/.env` (`.env.example` present, no Windows `bin/`), and the key appears in no build-stage file, image history, or image `Env`; there are no `.env*` files in the final image; `Config.User` is `1654` and `id` gives `uid=1654(app)`; with no configuration the container exits non-zero (exit code 139) after `Unhandled exception. System.InvalidOperationException: Invalid AI configuration: AI_API_KEY is not set. AI_MODEL is not set. AI_TIMEOUT_SECONDS must be …`; `docker compose config` is valid; `docker compose up` with `apps/api/.env` gives `GET /health` → 200 `{"status":"ok"}`, `AI_MODEL` taken from the file, and the key 0 times in the container logs.
 
 **Railway** — two services from the same repository:
 1. **API:** root `apps/api`, existing Dockerfile; variables `AI_API_KEY`, `AI_MODEL`, `AI_TIMEOUT_SECONDS`, `PORT=8080`, `CORS_ALLOWED_ORIGINS`; health check `/health`.
@@ -459,3 +460,5 @@ Post-deploy verification: `/health`; extraction with the README example, empty i
   - during the diagnosis, every request that included `nullable`, `minimum: 0`, and `thinkingLevel: "low"` either also contained `maxItems` (400) or got 503 "high demand"; the single direct request with the app's full request minus `maxItems` (sent before the code change) returned 503;
   - after the fix, the end-to-end smoke test through the API succeeded (see above), confirming the current request/schema, including `nullable`, `minimum: 0`, and `thinkingLevel: "low"`, is accepted by `gemini-3.1-flash-lite`.
 - The 413 response is a minimal ProblemDetails (`status`, `traceId`) without a `title`/`detail`.
+- When required configuration is missing, the container stops on an unhandled startup exception (clear message, but exit code 139 rather than a conventional 1). Exiting cleanly would need a small `Program.cs` change; left as is because the failure is non-zero and explicit.
+- The first GitHub Actions run of the updated workflow happens after the Phase 5 push; only schema validation and local equivalents have been run so far.

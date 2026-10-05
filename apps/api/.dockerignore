@@ -1,0 +1,18 @@
+# Keep secrets and local build output out of the Docker build context.
+# apps/api/.env holds the real API key locally; it must never reach an image or its build layers.
+**/.env
+**/.env.*
+!**/.env.example
+
+# Local build output (Windows paths in obj/ can break a Linux restore).
+**/bin/
+**/obj/
+
+# Editor and OS files.
+**/.vs/
+**/.vscode/
+**/.idea/
+**/*.user
+**/*.suo
+**/.DS_Store
+**/Thumbs.db

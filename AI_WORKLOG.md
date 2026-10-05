@@ -359,3 +359,33 @@ Chose runtime failure for a missing `VITE_API_BASE_URL` and keeping TypeScript 7
   - `localStorage`/`sessionStorage` empty throughout; no `dangerouslySetInnerHTML`, storage, or `console` use in `src`.
 - Real Gemini usage this phase: 4 successful requests (1 intended for the client check, 1 intended and 2 unintended in the browser run) and 1 request rejected for the invalid key. The API key appeared 0 times in the API logs.
 - Not verified live: the 45 s browser timeout message, which was not triggered deliberately.
+
+## 16. Phase 5: CI and Docker
+
+### Task
+Make the minimal CI and Docker changes found in the read-only Phase 5 inspection. No application code changes, no Docker-build CI job, no deployment.
+
+### Prompt or instruction
+Add `apps/api/.dockerignore` (env files, bin/obj, editor/OS files; keep `.env.example`); add `USER $APP_UID` to the Dockerfile; give Compose the required configuration from `apps/api/.env` via `env_file` with no hidden defaults; in CI, add `permissions: contents: read`, use `npm ci` with npm caching, and add NuGet caching; update `DESIGN.md` and this log; verify Docker only if Docker Desktop is running, otherwise report it as unverified.
+
+### Outcome
+- **Issue found during the inspection:** with no `.dockerignore`, a local `docker build` would have copied `apps/api/.env` (the real API key) and Windows `bin/`/`obj/` into the SDK build stage. The new `.dockerignore` excludes them.
+- **Compose detail:** the old `environment:` entries were removed rather than kept next to `env_file`. Compose gives `environment:` precedence, so `AI_MODEL=${AI_MODEL:-}` would have overridden the value from `apps/api/.env` with an empty string.
+- **NuGet caching:** used `actions/cache` keyed on the `*.csproj` hash. `setup-dotnet`'s built-in cache requires `packages.lock.json`, and adding lock files would have meant changing project files.
+- **Exit code:** the container exits with code 139 (not 1) when configuration is missing, after printing the clear `Invalid AI configuration` message. Recorded as a known limitation; fixing it needs a `Program.cs` change, which is out of scope here.
+- **Process interruptions:** my local API (`dotnet run`, :5000) and Vite dev server (:5173) were locking build files, so `dotnet test` and `npm ci` first failed (`npm ci` had already removed part of `node_modules`). Claude asked; with my approval it stopped both and re-ran the checks. Docker Desktop was not running; I started it, and Claude waited for the engine before running the Docker checks.
+- **Transient issue:** the first build-stage image build failed because Docker Desktop could not resolve `mcr.microsoft.com` right after starting (DNS). The build-stage checks from that attempt were discarded as invalid and re-run successfully.
+
+### Your decision
+Requested the Phase 5 scope; approved stopping the running API and dev server; started Docker Desktop myself. Phase 5 commit pending my review.
+
+### Verification
+- `dotnet test`: **209 passed, 0 failed, 0 skipped**. `npm ci`: success, 0 vulnerabilities. `npm run typecheck`: pass. `npm run build`: pass.
+- GitHub Actions workflow validated against the official schema with `@action-validator/cli` 0.6.0 (run via `npx`; nothing added to the repository): exit 0. The real GitHub Actions run happens after the push.
+- Docker (Docker Desktop 29.8.0, no Gemini calls):
+  - the API image builds;
+  - build stage: no `/src/.env`, `.env.example` present, no Windows `bin/`; the key is in 0 build-stage files and 0 history entries;
+  - final image: 0 `.env*` files, key not in the image `Env`;
+  - non-root: `Config.User` = `1654`, `id` = `uid=1654(app)`;
+  - no configuration: exit code 139 with `Invalid AI configuration: AI_API_KEY is not set. AI_MODEL is not set. AI_TIMEOUT_SECONDS must be …`;
+  - `docker compose config`: valid; `docker compose up` with `apps/api/.env`: `GET /health` → 200 `{"status":"ok"}`, `AI_MODEL` from the file, user `uid=1654(app)`, key 0 times in the container logs; `docker compose down` afterwards.
