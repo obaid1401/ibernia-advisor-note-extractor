@@ -1,30 +1,49 @@
+using System.Globalization;
+
 namespace Ibernia.Assessment.Api.Services;
 
 // A class rather than a record: a record's generated ToString() would print the API key.
 public sealed class AiOptions
 {
-    public const string DefaultModel = "gemini-3.8-flash";
-    public const int DefaultTimeoutSeconds = 30;
+    // Safety limit, not a default: a configured timeout above this is rejected.
     public const int MaxTimeoutSeconds = 300;
 
-    public string? ApiKey { get; init; }
-    public string Model { get; init; } = DefaultModel;
-    public int TimeoutSeconds { get; init; } = DefaultTimeoutSeconds;
+    public required string ApiKey { get; init; }
+    public required string Model { get; init; }
+    public required int TimeoutSeconds { get; init; }
 
-    // Blank values are treated as unset, so an empty AI_MODEL (e.g. from docker-compose) keeps the default.
+    // AI_API_KEY, AI_MODEL and AI_TIMEOUT_SECONDS are all required; nothing is defaulted. Missing or invalid
+    // values throw, naming only the variables (never their values), so the app fails at startup instead of
+    // silently using another model or timeout.
     public static AiOptions FromConfiguration(IConfiguration configuration)
     {
-        var apiKey = configuration["AI_API_KEY"];
-        var model = configuration["AI_MODEL"];
-        var timeout = configuration["AI_TIMEOUT_SECONDS"];
+        var apiKey = configuration["AI_API_KEY"]?.Trim();
+        var model = configuration["AI_MODEL"]?.Trim();
+        var timeoutText = configuration["AI_TIMEOUT_SECONDS"]?.Trim();
 
-        return new AiOptions
+        var problems = new List<string>();
+        if (string.IsNullOrEmpty(apiKey))
         {
-            ApiKey = string.IsNullOrWhiteSpace(apiKey) ? null : apiKey.Trim(),
-            Model = string.IsNullOrWhiteSpace(model) ? DefaultModel : model.Trim(),
-            TimeoutSeconds = int.TryParse(timeout, out var seconds) && seconds is > 0 and <= MaxTimeoutSeconds
-                ? seconds
-                : DefaultTimeoutSeconds,
-        };
+            problems.Add("AI_API_KEY is not set.");
+        }
+
+        if (string.IsNullOrEmpty(model))
+        {
+            problems.Add("AI_MODEL is not set.");
+        }
+
+        if (!int.TryParse(timeoutText, NumberStyles.None, CultureInfo.InvariantCulture, out var timeoutSeconds)
+            || timeoutSeconds < 1
+            || timeoutSeconds > MaxTimeoutSeconds)
+        {
+            problems.Add($"AI_TIMEOUT_SECONDS must be a whole number of seconds from 1 to {MaxTimeoutSeconds}.");
+        }
+
+        if (problems.Count > 0)
+        {
+            throw new InvalidOperationException("Invalid AI configuration: " + string.Join(" ", problems));
+        }
+
+        return new AiOptions { ApiKey = apiKey!, Model = model!, TimeoutSeconds = timeoutSeconds };
     }
 }

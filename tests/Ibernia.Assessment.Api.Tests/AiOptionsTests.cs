@@ -5,68 +5,90 @@ namespace Ibernia.Assessment.Api.Tests;
 
 public sealed class AiOptionsTests
 {
+    private static Dictionary<string, string?> Valid() => new()
+    {
+        ["AI_API_KEY"] = "test-key-NOT-REAL",
+        ["AI_MODEL"] = "test-model-a",
+        ["AI_TIMEOUT_SECONDS"] = "45",
+    };
+
     private static AiOptions FromValues(Dictionary<string, string?> values) =>
         AiOptions.FromConfiguration(new ConfigurationBuilder().AddInMemoryCollection(values).Build());
 
     [Fact]
-    public void Defaults_apply_when_nothing_is_configured()
+    public void Configured_values_are_used_as_given()
     {
-        var options = FromValues([]);
+        var options = FromValues(Valid());
 
-        Assert.Null(options.ApiKey);
-        Assert.Equal("gemini-3.8-flash", options.Model);
-        Assert.Equal(30, options.TimeoutSeconds);
-    }
-
-    [Theory]
-    [InlineData("")]
-    [InlineData("   ")]
-    public void Blank_values_are_treated_as_unset(string blank)
-    {
-        var options = FromValues(new()
-        {
-            ["AI_API_KEY"] = blank,
-            ["AI_MODEL"] = blank,
-            ["AI_TIMEOUT_SECONDS"] = blank,
-        });
-
-        Assert.Null(options.ApiKey);
-        Assert.Equal(AiOptions.DefaultModel, options.Model);
-        Assert.Equal(AiOptions.DefaultTimeoutSeconds, options.TimeoutSeconds);
-    }
-
-    [Fact]
-    public void Configured_values_are_used()
-    {
-        var options = FromValues(new()
-        {
-            ["AI_API_KEY"] = " test-key ",
-            ["AI_MODEL"] = "gemini-3.7-flash",
-            ["AI_TIMEOUT_SECONDS"] = "45",
-        });
-
-        Assert.Equal("test-key", options.ApiKey);
-        Assert.Equal("gemini-3.7-flash", options.Model);
+        Assert.Equal("test-key-NOT-REAL", options.ApiKey);
+        Assert.Equal("test-model-a", options.Model);
         Assert.Equal(45, options.TimeoutSeconds);
     }
 
-    [Theory]
-    [InlineData("0")]
-    [InlineData("-5")]
-    [InlineData("301")]
-    [InlineData("thirty")]
-    public void Invalid_timeout_falls_back_to_the_default(string timeout)
+    [Fact]
+    public void Surrounding_whitespace_is_trimmed()
     {
-        var options = FromValues(new() { ["AI_TIMEOUT_SECONDS"] = timeout });
+        var values = Valid();
+        values["AI_MODEL"] = "  test-model-b \r";
+        values["AI_TIMEOUT_SECONDS"] = " 20 ";
 
-        Assert.Equal(AiOptions.DefaultTimeoutSeconds, options.TimeoutSeconds);
+        var options = FromValues(values);
+
+        Assert.Equal("test-model-b", options.Model);
+        Assert.Equal(20, options.TimeoutSeconds);
+    }
+
+    [Theory]
+    [InlineData("AI_API_KEY", null)]
+    [InlineData("AI_API_KEY", "  ")]
+    [InlineData("AI_MODEL", null)]
+    [InlineData("AI_MODEL", "")]
+    [InlineData("AI_TIMEOUT_SECONDS", null)]
+    [InlineData("AI_TIMEOUT_SECONDS", "")]
+    [InlineData("AI_TIMEOUT_SECONDS", "0")]
+    [InlineData("AI_TIMEOUT_SECONDS", "-5")]
+    [InlineData("AI_TIMEOUT_SECONDS", "301")]
+    [InlineData("AI_TIMEOUT_SECONDS", "thirty")]
+    [InlineData("AI_TIMEOUT_SECONDS", "2.5")]
+    public void Missing_or_invalid_value_fails_and_names_the_variable(string name, string? value)
+    {
+        var values = Valid();
+        if (value is null)
+        {
+            values.Remove(name);
+        }
+        else
+        {
+            values[name] = value;
+        }
+
+        var ex = Assert.Throws<InvalidOperationException>(() => FromValues(values));
+
+        Assert.Contains(name, ex.Message);
     }
 
     [Fact]
-    public void ToString_does_not_expose_the_api_key()
+    public void No_hidden_defaults_when_nothing_is_configured()
     {
-        var options = FromValues(new() { ["AI_API_KEY"] = "super-secret-key" });
+        var ex = Assert.Throws<InvalidOperationException>(() => FromValues([]));
 
-        Assert.DoesNotContain("super-secret-key", options.ToString());
+        Assert.Contains("AI_API_KEY", ex.Message);
+        Assert.Contains("AI_MODEL", ex.Message);
+        Assert.Contains("AI_TIMEOUT_SECONDS", ex.Message);
+    }
+
+    [Fact]
+    public void Errors_and_ToString_never_contain_the_api_key()
+    {
+        var values = Valid();
+        values["AI_API_KEY"] = "super-secret-key-value";
+        values["AI_MODEL"] = "";
+
+        var ex = Assert.Throws<InvalidOperationException>(() => FromValues(values));
+        values["AI_MODEL"] = "test-model-a";
+        var options = FromValues(values);
+
+        Assert.DoesNotContain("super-secret-key-value", ex.Message);
+        Assert.DoesNotContain("super-secret-key-value", options.ToString());
     }
 }

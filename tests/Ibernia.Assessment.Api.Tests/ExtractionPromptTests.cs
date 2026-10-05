@@ -74,16 +74,12 @@ public sealed class ExtractionPromptTests
         Assert.Equal(FinancialFact.Periods, StringValues(properties["period"]!["enum"]!));
     }
 
+    // Gemini rejected the schema with 400 INVALID_ARGUMENT when maxItems was present (verified against the real
+    // API). Item limits are enforced only by ExtractionResponseParser (MaxListItems, MaxFinancialFacts).
     [Fact]
-    public void Response_schema_limits_match_the_parser_limits()
+    public void Response_schema_does_not_send_max_items()
     {
-        var properties = ExtractionPrompt.CreateResponseSchema()["properties"]!;
-
-        Assert.Equal(ExtractionResponseParser.MaxFinancialFacts, (int)properties["financialFacts"]!["maxItems"]!);
-        foreach (var list in new[] { "goals", "futureEvents", "risksOrQuestions" })
-        {
-            Assert.Equal(ExtractionResponseParser.MaxListItems, (int)properties[list]!["maxItems"]!);
-        }
+        Assert.DoesNotContain("maxItems", ExtractionPrompt.CreateResponseSchema().ToJsonString());
     }
 
     [Fact]

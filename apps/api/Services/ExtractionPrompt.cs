@@ -52,10 +52,10 @@ public static partial class ExtractionPrompt
         {
           "type": "OBJECT",
           "properties": {
-            "goals":            { "type": "ARRAY", "maxItems": 20, "items": { "type": "STRING" } },
-            "futureEvents":     { "type": "ARRAY", "maxItems": 20, "items": { "type": "STRING" } },
-            "risksOrQuestions": { "type": "ARRAY", "maxItems": 20, "items": { "type": "STRING" } },
-            "financialFacts": { "type": "ARRAY", "maxItems": 30, "items": {
+            "goals":            { "type": "ARRAY", "items": { "type": "STRING" } },
+            "futureEvents":     { "type": "ARRAY", "items": { "type": "STRING" } },
+            "risksOrQuestions": { "type": "ARRAY", "items": { "type": "STRING" } },
+            "financialFacts": { "type": "ARRAY", "items": {
               "type": "OBJECT",
               "properties": {
                 "category":      { "type": "STRING", "format": "enum", "enum": ["pension","savings","investment","property","income","spending","debt","other"] },

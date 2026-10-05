@@ -196,3 +196,111 @@ Requested the fix and the test additions; approved removing the stray semicolon.
 - `dotnet test tests/Ibernia.Assessment.Api.Tests/Ibernia.Assessment.Api.Tests.csproj`: **142 passed, 0 failed, 0 skipped**.
 - Mutation check: in a temporary copy the old "any digit" rule was restored; the end-to-end regression test `Amount_that_differs_from_its_source_text_is_dropped_with_a_warning` failed as expected (141 passed, 1 failed).
 - `git diff --check`: clean (exit 0; only line-ending notices). New untracked files checked separately: no trailing whitespace.
+
+## 10. Phase 3: Gemini integration and API wiring
+
+### Task
+Make `POST /api/notes/extract` work end to end with Gemini: `ILlmClient`, `GeminiLlmClient` (raw typed `HttpClient`, `generateContent`), `NoteExtractionService`, `NotesController`, `Program.cs` (DI, CORS, ProblemDetails, safe logging), deterministic tests, then one real synthetic smoke test.
+
+### Prompt or instruction
+Follow `docs/DESIGN.md` exactly; key only in the `x-goog-api-key` header; `responseSchema` + `thinkingLevel: low` + `AI_TIMEOUT_SECONDS`; map failures to 400/502/503/504/500 ProblemDetails; never expose or log note text, prompts, model output, provider messages, or the key; fake `ILlmClient` and stub `HttpMessageHandler` in tests; no frontend, CI, Docker, or deployment changes.
+
+### Outcome
+Implementation choices made by Claude:
+- `ExtractNoteRequest.Notes` changed to `string?`. With a non-nullable `string`, `[ApiController]` applies an implicit `[Required]`, so empty or whitespace notes would have been rejected by ASP.NET's own validation with a different message. The JSON contract is unchanged.
+- `AiOptions`, the `HttpClient` timeout, and the CORS origins are read lazily from the final configuration, so `WebApplicationFactory` overrides apply in tests.
+- Gemini codes are logged only if they match a short upper-case pattern; error `message` fields and bodies are never read into logs or exceptions.
+- **Problem found while writing tests:** ASP.NET's exception handler middleware logs the full exception (message and stack trace), which conflicts with the "log exception type only" policy. Added `UnhandledExceptionLogger` (type only) and filtered out the middleware's own log entry. A mutation check (filter removed in a temporary copy) made `Unexpected_exception_returns_generic_500_without_details` fail, confirming the test catches it.
+- **Bug found by the local smoke run (real Kestrel):** a 70 KB body returned **500 instead of 413**. Kestrel enforces `[RequestSizeLimit]` by throwing `BadHttpRequestException(413)`, and the exception handler turned it into 500. The in-memory test server does not enforce Kestrel's body limit, so the automated tests had not caught it. Fixed with `ExceptionHandlerOptions.StatusCodeSelector`, logged at Warning, and added a regression test. Re-run: 413.
+- Created `apps/api/.env` (git-ignored, confirmed with `git check-ignore`) with variable names and an empty `AI_API_KEY` at my request; updated `.env.example` to list all four backend variables.
+
+### Your decision
+Asked Claude to create the `.env` file with empty values; I will add the key later. Phase 3 commit pending my review.
+
+### Verification
+- `dotnet build apps/api/Ibernia.Assessment.Api.csproj`: Build succeeded, 0 warnings, 0 errors.
+- `dotnet test tests/Ibernia.Assessment.Api.Tests/Ibernia.Assessment.Api.Tests.csproj`: **196 passed, 0 failed, 0 skipped**.
+- `git diff --check`: clean (exit 0; only line-ending notices).
+- Local run against real Kestrel with no API key (no Gemini call made): `/health` 200; 70 KB body 413 (after the fix); README example 503 "temporarily unavailable", with an Error log "AI_API_KEY is not configured".
+- **Real Gemini smoke test: not yet run** — no API key is configured. Whether Gemini accepts `responseSchema` and `thinkingLevel: "low"` is still unverified.
+
+## 11. Phase 3 real Gemini smoke test (first attempt)
+
+### Task
+Run one real Gemini request through `POST /api/notes/extract` with the synthetic README example and verify structured output, `responseSchema`, `thinkingLevel: "low"`, and parsing. Change code only if a genuine integration problem appears.
+
+### Prompt or instruction
+Verify how `AI_API_KEY` reaches the app; never expose the key; one real request; if it fails on an API/schema issue, diagnose, make the minimum fix, and re-run.
+
+### Outcome
+- **Secret-handling issue caught before the run:** the key had been placed in `apps/api/.env.example`, which is tracked by git. Claude checked (counting lines, never printing values) that it was not staged and not in any commit, and asked before touching the file. I moved the key into the git-ignored `apps/api/.env` myself; Claude confirmed `.env.example` again matches the committed placeholder for `AI_API_KEY`.
+- How the key reaches the app: ASP.NET Core does not load `.env`. A scratch smoke script (outside the repository) reads `apps/api/.env` into the environment of the single API process it starts. The key was never printed; the API log contained 0 occurrences of it.
+- **Smoke result: failed.** `POST /api/notes/extract` returned 503; the log showed Gemini `HTTP 400 INVALID_ARGUMENT`. `/health` 200 and the 70 KB body 413 behaved correctly.
+- Diagnosis with direct `curl` requests (only the error status/message printed, key redacted):
+  - a minimal request without schema returned **200**, so the key, endpoint, and model are valid;
+  - responseMimeType + the full extraction `responseSchema` returned **400 "Request contains an invalid argument."** (no field named);
+  - single-keyword schemas that Gemini **accepted (200)**: upper-case `OBJECT`/`STRING` with `required`; `format: "enum"` + `enum`; `ARRAY` + `maxItems`;
+  - **untested:** `nullable`, `minimum`, their combination in the full schema, the `responseJsonSchema` alternative, and `thinkingLevel: "low"` — these hit 503 "high demand" and then 429 `RESOURCE_EXHAUSTED`. The 429 persisted after a pause, which suggests the free-tier daily request quota was used up. About 28 requests were sent in total, mostly retries during the 503 period; retrying on 503 consumed quota.
+- Observation: at default thinking, the 200 responses used 267–403 thinking tokens for a one-line prompt, which supports `thinkingLevel: "low"` once it can be verified.
+- **No code change was made**, because the failing keyword is not yet identified and any fix must be confirmed against the real API.
+
+### Your decision
+Pending: resume the diagnosis when the Gemini quota resets.
+
+### Verification
+Automated tests unchanged: 196 passed (no code changed since). Real end-to-end extraction: **not working yet** (schema rejected).
+
+## 12. Phase 3 configuration audit: no hidden defaults
+
+### Task
+Audit the implementation for hardcoded runtime configuration before the Phase 3 commit, after I found that changing `AI_MODEL` in `apps/api/.env` did not change the API's behaviour.
+
+### Prompt or instruction
+Classify every runtime value as configuration or a safety/policy constant; `AI_API_KEY`, `AI_MODEL`, and `AI_TIMEOUT_SECONDS` must come from configuration with no silent default for model or timeout; fail clearly when missing or invalid; establish exactly how `.env` reaches the app without assuming it is auto-loaded; no new dependency just for `.env`; tests must not need real secrets; no real Gemini request in this step.
+
+### Outcome
+- **Root cause confirmed:** ASP.NET Core does not read `apps/api/.env`. When the API is started with plain `dotnet run`, `AI_MODEL` is unset and the Phase 2 `AiOptions` silently fell back to `gemini-3.8-flash` (and to a 30 s timeout), so editing `.env` had no effect. Only Claude's scratch smoke script had ever loaded `.env`.
+- **This reverses a Phase 2 choice Claude had made:** "blank values are treated as unset, so the default applies". That hid configuration mistakes. Now all three `AI_*` values are required. Missing or invalid values throw an error naming only the variables, and `Program.cs` resolves `AiOptions` right after `Build()`, so the API fails at startup. The missing-key check moved from per request (503) to startup, and `GeminiLlmClient` keeps a defensive empty-key check.
+- Kept in code, with reasons recorded in `DESIGN.md`: the Gemini base URL and `v1beta` path (fixed public endpoint, and the request and response code is written for that API version); `MaxTimeoutSeconds = 300` (a limit that rejects, never substitutes); the request design (`thinkingLevel`, `maxOutputTokens`, schema); input and parser limits; and `http://localhost:5173` as a Development-only CORS origin.
+- Design change for the frontend phase: `VITE_API_BASE_URL` is now required, with no `http://localhost:5000` fallback.
+- `.env` approach: no dependency added. `DESIGN.md` documents a PowerShell snippet that loads `apps/api/.env` into the current session before `dotnet run`. Railway uses service variables; tests use dummy `UseSetting` values.
+- Fixed `apps/api/.env.example`: the earlier manual key removal had merged two comment lines and left a stray `=` line. Its comments also described defaults that no longer exist. It now lists all variables as required, with empty values.
+- Flagged for the Docker phase (not changed): `docker-compose.yml` passes an empty `AI_MODEL` and no `AI_TIMEOUT_SECONDS`, so the container would now fail at startup with a clear message until Compose is updated.
+
+### Your decision
+Requested the audit and the "no hidden defaults" rule. Phase 3 commit pending my review.
+
+### Verification
+- `dotnet build apps/api/Ibernia.Assessment.Api.csproj`: Build succeeded, 0 warnings, 0 errors.
+- `dotnet test tests/Ibernia.Assessment.Api.Tests/Ibernia.Assessment.Api.Tests.csproj`: **209 passed, 0 failed, 0 skipped**. New: `ConfigurationWiringTests` (real `Program.cs` wiring with a stubbed network: configured model and key in the outgoing request; `AI_TIMEOUT_SECONDS=1` gives 504 after about 1 s; the app refuses to start for each missing or invalid `AI_*` value) and a rewritten `AiOptionsTests`.
+- Mutation check: hardcoding `gemini-3.8-flash` back into the Gemini URL in a temporary copy made 2 tests fail, including `Configured_model_and_key_are_used_for_the_gemini_request`.
+- Real server, no Gemini request: started without the `AI_*` variables, the process exited with `Invalid AI configuration: AI_API_KEY is not set. AI_MODEL is not set. AI_TIMEOUT_SECONDS must be …`. Started after loading `apps/api/.env` with the documented snippet, it used the model from `.env`, `/health` returned 200, and the key appeared 0 times in the API output.
+- `git diff --check`: clean (exit 0; only line-ending notices). Scan of all tracked and untracked repository files (git-ignored `.env` excluded): the API key appears in 0 files.
+- No real Gemini request was made in this step.
+
+## 13. Phase 3 schema diagnosis and `maxItems` fix
+
+### Task
+Find which part of the `responseSchema` made Gemini return 400, then make the minimal fix.
+
+### Prompt or instruction
+Diagnose with a small number of direct, sequential Gemini requests (no retries, at least 25 s apart, stop on 503/429, key never printed), then remove only `maxItems` from `ResponseSchemaJson` and make the test contract explicit.
+
+### Outcome
+- First, the smoke test through the API with `AI_MODEL=gemini-3.1-flash-lite` (loaded from `apps/api/.env` with the documented PowerShell snippet): HTTP 503 from our API; Gemini had returned 400 `INVALID_ARGUMENT`.
+- Diagnostic requests on `gemini-3.1-flash-lite` (bodies derived from `ExtractionPrompt.cs`):
+  - minimal schema: 200; the fact object alone (enum, description, required): 200;
+  - full structure without `nullable`/`minimum` but **with `maxItems`**: 400; plus `nullable`: 400; plus `minimum`: 503 (run stopped);
+  - the same full structure **without `maxItems`**: **200**; `financialFacts` alone as an array of objects: 200;
+  - the complete schema as `responseJsonSchema` (with `maxItems`): 400.
+- Conclusion: **`maxItems` caused the 400.** One final direct request (the app's full request minus `maxItems`, with `nullable`, `minimum: 0`, and `thinkingLevel: "low"`) returned 503 "high demand" and was not retried.
+- **Fix:** removed `maxItems` from the four arrays in `ResponseSchemaJson`; nothing else in the schema changed. The parser already enforces the limits (20 per list for goals, futureEvents, and risksOrQuestions; 30 financialFacts).
+- The test `Response_schema_limits_match_the_parser_limits` read `maxItems` from the schema. It was replaced by `Response_schema_does_not_send_max_items`.
+- `DESIGN.md` updated: schema block, a dialect note recording the 400 and the parser-only limits, the stale "schema limits in sync with the parser" wording, and the open items.
+
+### Your decision
+Chose to remove `maxItems` after the diagnostics isolated it. Ran the diagnostics in steps and asked for no retries on 503.
+
+### Verification
+- `dotnet test`: **209 passed, 0 failed, 0 skipped**. `dotnet build`: succeeded, 0 warnings, 0 errors. `git diff --check`: clean.
+- **Not yet verified against the real API:** `nullable`, `minimum: 0`, and `thinkingLevel: "low"`. The end-to-end smoke test with the fixed schema is pending, because Gemini was returning HTTP 503 high demand.
