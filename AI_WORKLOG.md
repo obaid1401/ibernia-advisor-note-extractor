@@ -304,3 +304,23 @@ Chose to remove `maxItems` after the diagnostics isolated it. Ran the diagnostic
 ### Verification
 - `dotnet test`: **209 passed, 0 failed, 0 skipped**. `dotnet build`: succeeded, 0 warnings, 0 errors. `git diff --check`: clean.
 - **Not yet verified against the real API:** `nullable`, `minimum: 0`, and `thinkingLevel: "low"`. The end-to-end smoke test with the fixed schema is pending, because Gemini was returning HTTP 503 high demand.
+
+## 14. Phase 3 real end-to-end smoke test: success
+
+### Task
+Confirm the fixed request/schema against the real Gemini API through the application, after the Phase 3 code (commit `1d778ca`) was pushed.
+
+### Prompt or instruction
+I ran the smoke test myself: `POST /api/notes/extract` with synthetic notes, using the configured `AI_MODEL=gemini-3.1-flash-lite` and the current application request and schema. I then asked Claude to update only `DESIGN.md` and this log to record the result, without inventing output values.
+
+### Outcome
+- The request returned a **successful structured extraction response** through the full path: controller → `NoteExtractionService` → `GeminiLlmClient` → Gemini `generateContent` → `ExtractionResponseParser`.
+- This confirms on `gemini-3.1-flash-lite` that the current request is accepted: `responseMimeType: application/json`, the `responseSchema` without `maxItems` (with `nullable`, `minimum: 0`, `format: "enum"`), and `thinkingLevel: "low"`. Gemini's output also passed our parser.
+- Not re-verified on `gemini-3.8-flash` since the schema fix.
+- `DESIGN.md` updated: Phase 3 marked done; the "first live call" item is marked resolved; the stale "pending" and "unverified" wording is replaced; the `maxItems` diagnosis is kept as history.
+
+### Your decision
+Phase 3 is complete.
+
+### Verification
+Real end-to-end request run by me, with synthetic data: successful structured response. No code, tests, or configuration changed in this documentation update.

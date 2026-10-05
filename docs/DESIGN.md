@@ -11,7 +11,7 @@
 |---|---|---|
 | 1 | Design baseline (this document) | Done |
 | 2 | Domain models, `AiOptions`, `ExtractionException`, `ExtractionPrompt`, `ExtractionResponseParser`, unit tests | Implemented and unit-tested |
-| 3 | `ILlmClient`, `GeminiLlmClient`, `NoteExtractionService`, `NotesController`, `Program.cs` (DI, CORS, ProblemDetails, safe logging), service/client/endpoint tests | Implemented and tested with fakes. Real-API diagnosis found `maxItems` in the `responseSchema` caused Gemini's 400; removed. **End-to-end real Gemini smoke test still pending** (Gemini returning 503 high demand) — see Open items |
+| 3 | `ILlmClient`, `GeminiLlmClient`, `NoteExtractionService`, `NotesController`, `Program.cs` (DI, CORS, ProblemDetails, safe logging), service/client/endpoint tests | **Done.** Implemented and tested with fakes. Real-API diagnosis found `maxItems` in the `responseSchema` caused Gemini's 400; removed. Real end-to-end smoke test through `POST /api/notes/extract` with `gemini-3.1-flash-lite` returned a successful structured extraction — see Open items |
 | 4+ | Frontend, CI/Docker, deployment | Not started |
 
 ## Problem
@@ -179,7 +179,7 @@ Content-Type: application/json
 - `thinkingLevel: "low"` — extraction does not need deep reasoning; the default (`high`) is slower.
 - `maxOutputTokens` is generous because the docs do not state whether thinking tokens count towards it.
 - Default safety settings.
-- To verify on the first live call: `thinkingLevel` and the `responseSchema` below (including `nullable` and `format: "enum"`) are accepted by `gemini-3.8-flash` on `generateContent`.
+- Verified on the real API (Phase 3 smoke test, `gemini-3.1-flash-lite`): this request — including `thinkingLevel: "low"` and the `responseSchema` below with `nullable`, `minimum: 0`, and `format: "enum"` — is accepted on `generateContent`. Not re-verified on `gemini-3.8-flash` since the schema fix.
 
 **Free tier:** `gemini-3.8-flash` has a free tier, so no billing is required for the assessment. Google states that free-tier content may be used to improve its products — hence **synthetic data only**. A production deployment would need the paid tier (or Vertex AI) with an appropriate data processing agreement.
 
@@ -429,12 +429,13 @@ Post-deploy verification: `/health`; extraction with the README example, empty i
 
 ### Open items (to be confirmed during implementation)
 
-- Gemini API key available for local smoke testing and deployment.
+- Gemini API key: available for local use (git-ignored `apps/api/.env`); still to be configured as a Railway variable for deployment.
 - Railway access and a private GitHub repository with a remote.
-- First live call confirms `thinkingLevel: "low"` and the `responseSchema` (including `nullable` and `format: "enum"`) are accepted. **Still open.** Real calls (synthetic data, 2026-10-05) established:
+- ~~First live call confirms `thinkingLevel: "low"` and the `responseSchema` are accepted.~~ **Resolved in Phase 3:** a real end-to-end request through `POST /api/notes/extract` with `gemini-3.1-flash-lite` and the current request/schema (no `maxItems`; with `nullable`, `minimum: 0`, `format: "enum"`, and `thinkingLevel: "low"`) returned a successful structured extraction. History of how it was resolved — real calls (synthetic data, 2026-10-05):
   - key, endpoint, and `gemini-3.8-flash` work: a minimal `generateContent` request returned 200;
   - **the full extraction `responseSchema` is rejected with 400 `INVALID_ARGUMENT`** ("Request contains an invalid argument."; no field named), so the end-to-end extraction failed (API returned 503);
   - accepted in isolation: upper-case `OBJECT`/`STRING` with `required`, `format: "enum"` with `enum` (and, on `gemini-3.8-flash`, a single `ARRAY` of `STRING` with `maxItems`);
   - **cause isolated on `gemini-3.1-flash-lite`:** the full structure without `nullable`/`minimum` still returned 400 with `maxItems` and **200 without it**; `financialFacts` alone as an array of objects returned 200; the complete schema sent as `responseJsonSchema` (with `maxItems`) also returned 400. **Fix: `maxItems` removed from the schema** (limits enforced by the parser).
-  - **still not verified against the real API:** `nullable`, `minimum: 0`, and `thinkingLevel: "low"` — every request that included them either also contained `maxItems` (400) or got 503 "high demand". The single direct request with the app's full request minus `maxItems` (sent before the code change) returned 503, so the end-to-end smoke test through the API is still pending.
+  - during the diagnosis, every request that included `nullable`, `minimum: 0`, and `thinkingLevel: "low"` either also contained `maxItems` (400) or got 503 "high demand"; the single direct request with the app's full request minus `maxItems` (sent before the code change) returned 503;
+  - after the fix, the end-to-end smoke test through the API succeeded (see above), confirming the current request/schema, including `nullable`, `minimum: 0`, and `thinkingLevel: "low"`, is accepted by `gemini-3.1-flash-lite`.
 - The 413 response is a minimal ProblemDetails (`status`, `traceId`) without a `title`/`detail`.
