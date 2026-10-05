@@ -12,7 +12,8 @@
 | 1 | Design baseline (this document) | Done |
 | 2 | Domain models, `AiOptions`, `ExtractionException`, `ExtractionPrompt`, `ExtractionResponseParser`, unit tests | Implemented and unit-tested |
 | 3 | `ILlmClient`, `GeminiLlmClient`, `NoteExtractionService`, `NotesController`, `Program.cs` (DI, CORS, ProblemDetails, safe logging), service/client/endpoint tests | **Done.** Implemented and tested with fakes. Real-API diagnosis found `maxItems` in the `responseSchema` caused Gemini's 400; removed. Real end-to-end smoke test through `POST /api/notes/extract` with `gemini-3.1-flash-lite` returned a successful structured extraction — see Open items |
-| 4+ | Frontend, CI/Docker, deployment | Not started |
+| 4 | Frontend (`apps/web`): pinned dependencies, TypeScript config, API client, Advisor Note Extractor UI | Implemented; typecheck/build pass; verified in a real browser against the local API — see [Frontend](#frontend-as-implemented-phase-4) |
+| 5+ | CI/Docker, deployment | Not started |
 
 ## Problem
 
@@ -353,7 +354,21 @@ Planned coverage:
 
 Test packages: xUnit (existing) and `Microsoft.AspNetCore.Mvc.Testing`. No mocking library.
 
-Frontend: no automated tests (timebox). Verified by TypeScript typecheck, production build, and manual checks.
+Frontend: no automated tests (timebox). Verified by TypeScript typecheck, production build, and manual checks. In Phase 4 the manual checks were scripted outside the repository (no new dependencies): the real `api.ts` was run under Node against the local API, and the built app was driven in headless Microsoft Edge through the DevTools protocol (configuration error, validation, loading, success rendering, ProblemDetails error, API unavailable).
+
+## Frontend (as implemented, Phase 4)
+
+- **Stack:** React 19.3.0 + Vite 8.3.2 (`@vitejs/plugin-react` 6.1.2), TypeScript 7.0.2. Exact versions are pinned; build tooling and `@types/react`/`@types/react-dom` 19.3.0 are `devDependencies`; `package-lock.json` is committed. Scripts: `typecheck` = `tsc --noEmit`, `build` = `tsc --noEmit && vite build`.
+- **`tsconfig.json`:** `strict`, `noUncheckedIndexedAccess`, `noUnusedLocals/Parameters`, `jsx: react-jsx`, `moduleResolution: bundler`, `types: ["vite/client"]`, `noEmit`.
+- **`src/config.ts`:** reads `VITE_API_BASE_URL`; trims it, requires an absolute `http:`/`https:` URL, strips trailing slashes. Missing or invalid → a configuration error is shown and the button stays disabled. No fallback.
+- **`src/api.ts`** (no React or Vite dependencies, so it can run under Node):
+  - types `ExtractedNote`, `FinancialFact`, `ProblemDetails`; result `{ ok: true, data } | { ok: false, message }`;
+  - `validateNotes` mirrors the API: trimmed, non-empty, ≤ 10,000 characters (same messages as the API);
+  - `extractNotes` posts `{ notes }` to `${VITE_API_BASE_URL}/api/notes/extract` with `AbortSignal.timeout(45000)` (longer than the API's `AI_TIMEOUT_SECONDS`);
+  - errors: a ProblemDetails `detail` is shown as is (it is user-safe by design); a non-ProblemDetails error shows "The extraction service returned an error (HTTP n)…"; a network failure shows "Could not reach the extraction service…"; the browser timeout shows "The request took too long…";
+  - a 200 response is shape-checked before rendering; an unexpected shape shows an error instead of crashing.
+- **`src/main.tsx` UI:** notes textarea; counter `n / 10,000` (raw length; red when the trimmed length is over the limit); validation message after the field is touched; button disabled when invalid, unconfigured, or loading ("Extracting…"); error alert; results with the disclaimer **"AI-extracted — verify against the original notes"**, server warnings, goals, financial facts, future events, risks and questions. Each fact shows label, category, an **Approximate** badge, amount (formatted with the currency when stated; whole amounts without decimals, otherwise two), currency, period ("Per year"/"Per month"), and the `sourceText` quote. `null` values show **"Not stated"**; empty sections show **"None mentioned"**.
+- **Safety:** all output is plain React text (no `dangerouslySetInnerHTML`); nothing is written to `localStorage`/`sessionStorage`; no `console` logging of notes or responses.
 
 ## Deployment approach
 
@@ -366,7 +381,7 @@ Frontend: no automated tests (timebox). Verified by TypeScript typecheck, produc
 | `AI_TIMEOUT_SECONDS` | API | **Required, no default.** Whole seconds, 1–300 (300 is a safety limit) |
 | `CORS_ALLOWED_ORIGINS` | API | Comma-separated allowed origins (deployed frontend URL). Empty = no cross-origin access |
 | `PORT` | Railway (API) | `8080`, matching the Dockerfile |
-| `VITE_API_BASE_URL` | Web (build time) | **Required, no fallback** (changed by the configuration audit; previously a `http://localhost:5000` development fallback was planned). Not secret. To be implemented in the frontend phase. |
+| `VITE_API_BASE_URL` | Web (build time) | **Required, no fallback** (changed by the configuration audit; previously a `http://localhost:5000` development fallback was planned). Not secret. Implemented in Phase 4: when missing or not an absolute http(s) URL, the app shows a configuration error and disables extraction (the build itself does not fail). |
 
 **Configuration audit (Phase 3).** Changing `AI_MODEL` in `apps/api/.env` had no effect, because the app does not read `.env` and `AiOptions` silently fell back to `gemini-3.8-flash` (and to a 30 s timeout). Decision: runtime configuration has **no hidden defaults**.
 - `AiOptions.FromConfiguration` requires `AI_API_KEY`, `AI_MODEL`, and `AI_TIMEOUT_SECONDS` (whole number 1–300, invariant culture; surrounding whitespace trimmed). Missing or invalid values throw `InvalidOperationException("Invalid AI configuration: …")`, which names only the variables, never their values.
@@ -379,7 +394,8 @@ Frontend: no automated tests (timebox). Verified by TypeScript typecheck, produc
 | Gemini model | `AI_MODEL` | Runtime configuration |
 | Gemini timeout | `AI_TIMEOUT_SECONDS` | Runtime configuration |
 | Allowed CORS origins | `CORS_ALLOWED_ORIGINS` | Runtime configuration |
-| Frontend → API URL | `VITE_API_BASE_URL` (frontend phase) | Runtime (build-time) configuration |
+| Frontend → API URL | `VITE_API_BASE_URL` (`apps/web/src/config.ts`) | Runtime (build-time) configuration |
+| Browser request timeout (45 s), 10,000-character client check | Code (`apps/web/src/api.ts`) | Application policy constants mirroring the API |
 | Listening port | `ASPNETCORE_URLS=http://+:8080` in the Dockerfile; Railway routes to 8080 | Deployment configuration (container) |
 | `http://localhost:5173` CORS origin | Code, **Development environment only** | Local-development convenience (Vite's default dev port), never active in production |
 | Gemini base URL `https://generativelanguage.googleapis.com/` and path `v1beta/models/{model}:generateContent` | Code constant | Fixed public provider endpoint: the request body, response parsing, and error mapping are written for this exact API version, so changing it is a code change, not a deployment choice |
@@ -398,6 +414,10 @@ dotnet run --project apps/api
 ```
 
 The variables exist only in that terminal session. Railway provides the same variables as service variables. Automated tests set dummy values with `UseSetting` and never need a real key.
+
+Note: without `launchSettings.json`, `dotnet run` starts the API in the **Production** environment, so the Development-only `http://localhost:5173` CORS origin is not active; local frontend development therefore relies on `CORS_ALLOWED_ORIGINS=http://localhost:5173` in `apps/api/.env`.
+
+**Frontend local development.** Unlike ASP.NET Core, Vite does read `.env` files itself. Copy `apps/web/.env.example` to `apps/web/.env.local` (git-ignored via `.env.*`), set `VITE_API_BASE_URL=http://localhost:5000` (the API's default `dotnet run` address), then `npm ci` and `npm run dev` in `apps/web` (served on `http://localhost:5173`).
 
 **CI (GitHub Actions)** — extend the existing workflow:
 - Commit `apps/web/package-lock.json`; use `npm ci`.

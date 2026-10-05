@@ -324,3 +324,38 @@ Phase 3 is complete.
 
 ### Verification
 Real end-to-end request run by me, with synthetic data: successful structured response. No code, tests, or configuration changed in this documentation update.
+
+## 15. Phase 4: frontend
+
+### Task
+Implement the Advisor Note Extractor UI in `apps/web` according to `DESIGN.md`, with pinned dependencies and type checking; no backend, CI, Docker, or deployment changes.
+
+### Prompt or instruction
+Pin the existing versions from the lockfile; move tooling to `devDependencies`; add React type packages, a strict `tsconfig.json`, `vite.config.ts`, and `.env.example`; commit-ready lockfile; typed API client with a 45 s timeout and safe ProblemDetails, network, and timeout handling; a UI with counter, validation, loading/success/error states, all result sections, "Not stated" / "None mentioned", Approximate badge, source quote, and the disclaimer; plain React text only; no browser storage. My decisions: `VITE_API_BASE_URL` fails clearly **at runtime**, not at build time, with no fallback; keep TypeScript 7.0.2 unless it actually breaks.
+
+### Outcome
+- Pinned react/react-dom 19.3.0 (dependencies) and vite 8.3.2, @vitejs/plugin-react 6.1.2, typescript 7.0.2, plus new @types/react and @types/react-dom 19.3.0 (devDependencies). Regenerated `package-lock.json` (0 vulnerabilities). TypeScript 7.0.2 worked without changes; a deliberate type error was caught, confirming `tsc` really checks the files.
+- New `src/config.ts` (runtime check of `VITE_API_BASE_URL`, no fallback) and `src/api.ts` (types, `validateNotes`, `extractNotes`). The client has no React or Vite dependencies, so it could be run directly under Node against the real API. `main.tsx` was rewritten on the starter's structure, `styles.css` was extended, and the page title changed to "Advisor Note Extractor".
+- **Issue found in browser verification:** amounts rendered as `£420,000.00`. Changed to no decimals for whole amounts and two otherwise (`£420,000`, `£2,500.50`).
+- **Problem in Claude's own verification harness:** the first browser run started the API and preview server inside bash subshells, so `kill` did not stop them. The API from the success step (with the real key) kept running, and the "invalid key" and "API down" steps silently hit it. Those two steps were invalid, and they made **two extra real Gemini calls**. Claude found the leftover processes by port, stopped them, rewrote the harness to start processes directly with a port-free guard, and re-ran only those two steps.
+- **`npm ci` failed with EPERM** on the final re-run: a Vite dev server (`npm run dev`, port 5174) that Claude had not started was locking `node_modules`. Claude asked before stopping it; with my approval it was stopped and the checks re-ran cleanly.
+
+### Your decision
+Chose runtime failure for a missing `VITE_API_BASE_URL` and keeping TypeScript 7.0.2; approved stopping the dev server. Phase 4 commit pending my review.
+
+### Verification
+- `npm ci`: success, 0 vulnerabilities. `npm run typecheck`: pass. `npm run build`: pass (built without `VITE_API_BASE_URL`, confirming a missing value does not fail the build and no `localhost` is embedded).
+- Real API client (`src/api.ts` under Node, local API on :5000 loaded from `apps/api/.env`, `gemini-3.1-flash-lite`):
+  - successful extraction: `ok: true`, 1 goal, 2 financial facts, 2 future events, 1 risk/question, 0 warnings (7.8 s);
+  - empty and 10,001-character notes: rejected by `validateNotes` and, when sent anyway, by the API with ProblemDetails, whose `detail` came through as the message;
+  - API stopped: "Could not reach the extraction service…".
+- CORS: preflight from `http://localhost:5173` allowed (`Access-Control-Allow-Origin: http://localhost:5173`, methods GET,POST); another origin got no CORS headers.
+- Headless Edge driving the built app on :5173:
+  - built without `VITE_API_BASE_URL`: configuration error shown, button disabled;
+  - initial: counter `0 / 10,000`, button disabled; whitespace-only: "Please enter meeting notes."; 10,001 characters: counter `10,001 / 10,000` in red and "Notes must be 10,000 characters or fewer."; valid notes enable the button;
+  - submit: button showed "Extracting…" (disabled) while loading, then rendered the disclaimer, goals, both facts (with "Not stated" for a null period and "Per year" for annual), future events, and risks/questions;
+  - API with an invalid key (Gemini 400, API 503 ProblemDetails): alert "The AI service is temporarily unavailable. Please try again.";
+  - API stopped: alert "Could not reach the extraction service…";
+  - `localStorage`/`sessionStorage` empty throughout; no `dangerouslySetInnerHTML`, storage, or `console` use in `src`.
+- Real Gemini usage this phase: 4 successful requests (1 intended for the client check, 1 intended and 2 unintended in the browser run) and 1 request rejected for the invalid key. The API key appeared 0 times in the API logs.
+- Not verified live: the 45 s browser timeout message, which was not triggered deliberately.
